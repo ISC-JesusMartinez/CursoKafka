@@ -1,0 +1,72 @@
+version: '2.1'
+
+services:
+
+  mysql:
+    #*-----------------------------*
+    # To connect to the DB:
+    #   docker exec -it mysql bash -c 'mysql -u root -p$MYSQL_ROOT_PASSWORD demo'
+    # *-----------------------------*
+    image: mysql:8.0
+    container_name: mysql
+    ports:
+      - 3306:3306
+    environment:
+     - MYSQL_ROOT_PASSWORD=debezium
+     - MYSQL_USER=mysqluser
+     - MYSQL_PASSWORD=mysqlpw
+    volumes:
+     - ${PWD}/data/mysql:/docker-entrypoint-initdb.d
+     - ${PWD}/data:/data
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.1
+    container_name: elasticsearch
+    hostname: elasticsearch
+    ports:
+      - 9200:9200
+    environment:
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      discovery.type: "single-node"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.10.1
+    container_name: kibana
+    hostname: kibana
+    depends_on:
+      - elasticsearch
+    ports:
+      - 5601:5601
+    environment:
+      xpack.security.enabled: "false"
+      discovery.type: "single-node"
+    command:
+      - bash
+      - -c
+      - |
+        /usr/local/bin/kibana-docker &
+        echo "Waiting for Kibana to be ready ⏳"
+        while [ $$(curl -H 'kbn-xsrf: true' -s -o /dev/null -w %{http_code} http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=*) -ne 200 ] ; do 
+          echo -e "\t" $$(date) " Kibana saved objects request response: " $$(curl -H 'kbn-xsrf: true' -o /dev/null -w %{http_code} -s http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=*) $$(curl -H 'kbn-xsrf: true' -s http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=*) " (waiting for 200)"
+          sleep 5  
+        done
+        echo -e "\t" $$(date) " Kibana saved objects request response: " $$(curl -H 'kbn-xsrf: true' -o /dev/null -w %{http_code} -s http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=*) $$(curl -H 'kbn-xsrf: true' -s http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=*)
+        echo -e "\n--\n+> Pre-creating index pattern"
+        curl -s -XPOST 'http://localhost:5601/api/saved_objects/index-pattern/mysql-debezium-test.demo.orders' \
+          -H 'kbn-xsrf: nevergonnagiveyouup' \
+          -H 'Content-Type: application/json' \
+          -d '{"attributes":{"title":"mysql-debezium-test.demo.orders","timeFieldName":"CREATE_TS"}}'
+        echo -e "\n--\n+> Setting the index pattern as default"
+        curl -s -XPOST 'http://localhost:5601/api/kibana/settings' \
+          -H 'kbn-xsrf: nevergonnagiveyouup' \
+          -H 'content-type: application/json' \
+          -d '{"changes":{"defaultIndex":"mysql-debezium-test.demo.orders"}}'
+        echo -e "\n--\n+> Opt out of Kibana telemetry"
+        curl 'http://localhost:5601/api/telemetry/v2/optIn' \
+            -H 'kbn-xsrf: nevergonnagiveyouup' \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json' \
+            --data-binary '{"enabled":false}' \
+            --compressed
+        sleep infinity
